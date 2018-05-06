@@ -142,6 +142,21 @@ class BasicAttn(object):
 
     def build_graph(self, values, values_mask, keys):
         """
+        Blended representation consists of keys and the parts of the values relevant to the keys
+        """
+        _, attn_output = self.compute_attention(values, values_mask, keys) # attn_output is shape (batch_size, context_len, hidden_size*2)
+
+        # Concat attn_output to context_hiddens to get blended_reps
+        blended_reps = tf.concat([keys, attn_output], axis=2) # (batch_size, context_len, hidden_size*4)
+
+        # Apply fully connected layer to each blended representation
+        # Note, blended_reps_final corresponds to b' in the handout
+        # Note, tf.contrib.layers.fully_connected applies a ReLU non-linarity here by default
+        blended_reps_final = tf.contrib.layers.fully_connected(blended_reps, num_outputs=self.key_vec_size) # blended_reps_final is shape (batch_size, context_len, hidden_size)
+        return blended_reps_final
+
+    def compute_attention(self, values, values_mask, keys):
+        """
         Keys attend to values.
         For each key, return an attention distribution and an attention output vector.
 
