@@ -44,9 +44,9 @@ class RNNEncoder(object):
         """
         self.hidden_size = hidden_size
         self.keep_prob = keep_prob
-        self.rnn_cell_fw = rnn_cell.GRUCell(self.hidden_size)
+        self.rnn_cell_fw = rnn_cell.LSTMCell(self.hidden_size)
         self.rnn_cell_fw = DropoutWrapper(self.rnn_cell_fw, input_keep_prob=self.keep_prob)
-        self.rnn_cell_bw = rnn_cell.GRUCell(self.hidden_size)
+        self.rnn_cell_bw = rnn_cell.LSTMCell(self.hidden_size)
         self.rnn_cell_bw = DropoutWrapper(self.rnn_cell_bw, input_keep_prob=self.keep_prob)
 
     def build_graph(self, inputs, masks):
@@ -152,7 +152,7 @@ class BasicAttn(object):
         # Apply fully connected layer to each blended representation
         # Note, blended_reps_final corresponds to b' in the handout
         # Note, tf.contrib.layers.fully_connected applies a ReLU non-linarity here by default
-        blended_reps_final = tf.contrib.layers.fully_connected(blended_reps, num_outputs=self.key_vec_size) # blended_reps_final is shape (batch_size, context_len, hidden_size)
+        blended_reps_final = tf.contrib.layers.fully_connected(blended_reps, num_outputs=self.key_vec_size/2) # blended_reps_final is shape (batch_size, context_len, hidden_size)
         return blended_reps_final
 
     def compute_attention(self, values, values_mask, keys):
