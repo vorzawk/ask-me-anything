@@ -144,7 +144,7 @@ class BasicAttn(object):
         """
         Blended representation consists of keys and the parts of the values relevant to the keys
         """
-        _, attn_output = self.compute_attention(values, values_mask, keys) # attn_output is shape (batch_size, context_len, hidden_size*2)
+        _, attn_output = compute_attention(self.keep_prob, values, values_mask, keys) # attn_output is shape (batch_size, context_len, hidden_size*2)
 
         # Concat attn_output to context_hiddens to get blended_reps
         blended_reps = tf.concat([keys, attn_output], axis=2) # (batch_size, context_len, hidden_size*4)
@@ -155,41 +155,65 @@ class BasicAttn(object):
         blended_reps_final = tf.contrib.layers.fully_connected(blended_reps, num_outputs=self.key_vec_size/2) # blended_reps_final is shape (batch_size, context_len, hidden_size)
         return blended_reps_final
 
-    def compute_attention(self, values, values_mask, keys):
-        """
-        Keys attend to values.
-        For each key, return an attention distribution and an attention output vector.
 
+class CoAttn(BasicAttn):
+    """
+    Module for coattention
+    """
+    def __init__(self, keep_prob, qn_vec_size, cxt_vec_size):
+        """
         Inputs:
-          values: Tensor shape (batch_size, num_values, value_vec_size).
-          values_mask: Tensor shape (batch_size, num_values).
-            1s where there's real input, 0s where there's padding
-          keys: Tensor shape (batch_size, num_keys, value_vec_size)
-
-        Outputs:
-          attn_dist: Tensor shape (batch_size, num_keys, num_values).
-            For each key, the distribution should sum to 1,
-            and should be 0 in the value locations that correspond to padding.
-          output: Tensor shape (batch_size, num_keys, hidden_size).
-            This is the attention output; the weighted sum of the values
-            (using the attention distribution as weights).
+            keep_prob: tensor containing a single scalar that is the keep probability (for dropout)
+            qn_vec_size: size of the question vectors. int
+            cxt_vec_size: size of the context vectors. int
         """
-        with vs.variable_scope("BasicAttn"):
+        self.keep_prob = keep_prob
+        self.qn_vec_size = qn_vec_size
+        self.cxt_vec_size = cxt_vec_size
 
-            # Calculate attention distribution
-            values_t = tf.transpose(values, perm=[0, 2, 1]) # (batch_size, value_vec_size, num_values)
-            attn_logits = tf.matmul(keys, values_t) # shape (batch_size, num_keys, num_values)
-            attn_logits_mask = tf.expand_dims(values_mask, 1) # shape (batch_size, 1, num_values)
-            _, attn_dist = masked_softmax(attn_logits, attn_logits_mask, 2) # shape (batch_size, num_keys, num_values). take softmax over values
+    def build_graph(self, qn_hiddens, cxt_hiddens, qn_mask, cxt_mask):
+        """
+        Compute C2Q attention, Q2C attention and then coattention
+        """
+        alpha, a = compute_attention(self.keep_prob, qn_hiddens, qn_mask, cxt_hiddens)
+        _, b = compute_attention(self.keep_prob, cxt_hiddens, cxt_mask, qn_hiddens)
+        alpha_n = tf.expand_dims(alpha,-1)
 
-            # Use attention distribution to take weighted sum of values
-            output = tf.matmul(attn_dist, values) # shape (batch_size, num_keys, value_vec_size)
+        print 'a :', a, 'alpha : ', alpha, 'b :', b
 
-            # Apply dropout
-            output = tf.nn.dropout(output, self.keep_prob)
+def compute_attention(keep_prob, values, values_mask, keys):
+    """
+    Keys attend to values.
+    For each key, return an attention distribution and an attention output vector.
 
-            return attn_dist, output
+    Inputs:
+        keep_prob: tensor containing a single scalar that is the keep probability (for dropout)
+        values: Tensor shape (batch_size, num_values, value_vec_size).
+        values_mask: Tensor shape (batch_size, num_values).
+        1s where there's real input, 0s where there's padding
+        keys: Tensor shape (batch_size, num_keys, value_vec_size)
 
+    Outputs:
+        attn_dist: Tensor shape (batch_size, num_keys, num_values).
+        For each key, the distribution should sum to 1,
+        and should be 0 in the value locations that correspond to padding.
+        output: Tensor shape (batch_size, num_keys, hidden_size).
+        This is the attention output; the weighted sum of the values
+        (using the attention distribution as weights).
+    """
+    # Calculate attention distribution
+    values_t = tf.transpose(values, perm=[0, 2, 1]) # (batch_size, value_vec_size, num_values)
+    attn_logits = tf.matmul(keys, values_t) # shape (batch_size, num_keys, num_values)
+    attn_logits_mask = tf.expand_dims(values_mask, 1) # shape (batch_size, 1, num_values)
+    _, attn_dist = masked_softmax(attn_logits, attn_logits_mask, 2) # shape (batch_size, num_keys, num_values). take softmax over values
+
+    # Use attention distribution to take weighted sum of values
+    output = tf.matmul(attn_dist, values) # shape (batch_size, num_keys, value_vec_size)
+
+    # Apply dropout
+    output = tf.nn.dropout(output, keep_prob)
+
+    return attn_dist, output
 
 def masked_softmax(logits, mask, dim):
     """
