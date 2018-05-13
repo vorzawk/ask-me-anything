@@ -70,7 +70,9 @@ class QAModel(object):
         # Define optimizer and updates
         # (updates is what you need to fetch in session.run to do a gradient update)
         self.global_step = tf.Variable(0, name="global_step", trainable=False)
-        opt = tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate) # you can try other optimizers
+        #learning rate annealing
+        decayed_learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, self.global_step, 10000, 0.95, staircase=True)
+        opt = tf.train.AdamOptimizer(learning_rate=decayed_learning_rate) # you can try other optimizers
         self.updates = opt.apply_gradients(zip(clipped_gradients, params), global_step=self.global_step)
 
         # Define savers (for checkpointing) and summaries (for tensorboard)
@@ -137,7 +139,7 @@ class QAModel(object):
         # Use context hidden states to attend to question hidden states
 #        attn_layer = BasicAttn(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
 #        blended_reps_final = attn_layer.build_graph(question_hiddens, self.qn_mask, context_hiddens) # attn_output is shape (batch_size, context_len, hidden_size*2)
-        attn_layer = CoAttn_WQonly(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
+        attn_layer = CoAttn(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
         blended_reps_final = attn_layer.build_graph(question_hiddens, context_hiddens, self.qn_mask, self.context_mask) # attn_output is shape (batch_size, context_len, hidden_size*2)
         # Use softmax layer to compute probability distribution for start location
         # Note this produces self.logits_start and self.probdist_start, both of which have shape (batch_size, context_len)
@@ -513,8 +515,6 @@ class QAModel(object):
             logging.info("End of epoch %i. Time for epoch: %f" % (epoch, epoch_toc-epoch_tic))
 
         sys.stdout.flush()
-
-
 
 def write_summary(value, tag, summary_writer, global_step):
     """Write a single summary value to tensorboard"""
