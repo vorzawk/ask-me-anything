@@ -140,6 +140,10 @@ class BasicAttn(object):
         self.keep_prob = keep_prob
         self.key_vec_size = key_vec_size
         self.value_vec_size = value_vec_size
+        self.rnn_cell_fw = rnn_cell.LSTMCell(value_vec_size/2, reuse=tf.AUTO_REUSE)
+        self.rnn_cell_fw = DropoutWrapper(self.rnn_cell_fw, input_keep_prob=self.keep_prob)
+        self.rnn_cell_bw = rnn_cell.LSTMCell(value_vec_size/2, reuse=tf.AUTO_REUSE)
+        self.rnn_cell_bw = DropoutWrapper(self.rnn_cell_bw, input_keep_prob=self.keep_prob)
 
     def build_graph(self, values, values_mask, keys):
         """
@@ -149,14 +153,14 @@ class BasicAttn(object):
 
         # Concat attn_output to context_hiddens to get blended_reps
         blended_reps = tf.concat([keys, attn_output], axis=2) # (batch_size, context_len, hidden_size*4)
+        with tf.variable_scope('BasicAttn_BRNN', reuse=True):
+            (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(self.rnn_cell_fw, self.rnn_cell_bw, blended_reps, dtype=tf.float32,
+                                                                  scope='BasicAttn_BRNN')
 
-        # Apply fully connected layer to each blended representation
-        # Note, blended_reps_final corresponds to b' in the handout
-        # Note, tf.contrib.layers.fully_connected applies a ReLU non-linarity here by default
-        blended_reps_dense = tf.contrib.layers.fully_connected(blended_reps, num_outputs=self.key_vec_size/2)
-        # blended_reps_dense is shape (batch_size, context_len, hidden_size)
-        # Add twice the dropout to the fully_connected layer
-        blended_reps_final = tf.nn.dropout(x=blended_reps_dense, keep_prob=self.keep_prob/2)
+        # Concatenate the forward and backward hidden states
+        blended_reps_dense = tf.concat([fw_out, bw_out], 2)
+        # Apply dropout
+        blended_reps_final = tf.nn.dropout(blended_reps_dense, self.keep_prob)
         return blended_reps_final
 
 class CoAttn_basic(object):
@@ -199,7 +203,7 @@ class CoAttn_basic(object):
         blended_reps_final = tf.contrib.layers.fully_connected(blended_reps, num_outputs=self.qn_vec_size/2)
         return blended_reps_final
 
-class CoAttn_WQonly(object):
+class CoAttn_simplified(object):
     """
     Module for coattention, only the barebones of coattention are implemented : Q2C attention, C2Q attention, coattention which is then fed
     into a fully_connected layer
@@ -222,31 +226,48 @@ class CoAttn_WQonly(object):
         """
         question_len = 30
         context_len = 450
-        batch_size = 128
+        # Always using batch_size = 128 does not work, since the number of examples in the validation set is unlikely to be a multiple of
+        # 128. The final batch would have to have <128 examples unlike in training where batches get filled up fully each time.
+        batch_size = tf.shape(qn_hiddens)[0]
+        qn_sentinel = tf.tile(tf.zeros([1,1,self.qn_vec_size]), [batch_size, 1, 1])
+        # qn_hiddens has shape (batch_size, qn_len, qn_vec_size)
+        qn_hiddens = tf.concat([qn_hiddens, qn_sentinel], axis=1)
+        # qn_hiddens has shape (batch_size, qn_len + 1, qn_vec_size)
+        cxt_sentinel = tf.tile(tf.zeros([1,1,self.cxt_vec_size]), [batch_size, 1, 1])
+        # cxt_hiddens has shape (batch_size, context_len, cxt_vec_size)
+        cxt_hiddens = tf.concat([cxt_hiddens, cxt_sentinel], axis=1)
+        # cxt_hiddens has shape (batch_size, context_len + 1, cxt_vec_size)
+
         # Add a non-linear projection layer to allow for variation between the context encoding space and the question encoding space
         qn_hiddens = tf.contrib.layers.fully_connected(qn_hiddens, num_outputs=self.qn_vec_size, activation_fn=tf.nn.tanh)
-        qn_hiddens = tf.nn.dropout(x=qn_hiddens, keep_prob=self.keep_prob/2)
+        # qn_hiddens still has the shape (batch_size, qn_len + 1, qn_vec_size)
 
         # build the affinity matrix
         qn_hiddens_t = tf.transpose(qn_hiddens, perm=[0,2,1])
         L = tf.matmul(cxt_hiddens, qn_hiddens_t) # L shape : (batch_size, num_cxt + 1, num_qn + 1)
         # Obtain C2Q attention outputs
-        alpha_logits_mask = tf.expand_dims(qn_mask, 1) # shape (batch_size, 1, num_qn + 1)
-        _, alpha = masked_softmax(L, alpha_logits_mask, 2) # alpha shape : (batch_size, num_cxt + 1, num_qn + 1)
-        a = tf.matmul(alpha, qn_hiddens)    # a shape : (batch_size, num_cxt+1, qn_vec_size
-        alpha_n = tf.expand_dims(alpha,-1) # alpha_n shape : (batch_size, num_cxt+1, num_qn+1, 1)
+        # Unmask the sentinel vector
+        alpha = tf.nn.softmax(L) # alpha shape : (batch_size, num_cxt + 1, num_qn + 1)
+        a = tf.matmul(alpha, qn_hiddens)    # a shape : (batch_size, num_cxt, qn_vec_size)
+        alpha_n = tf.expand_dims(alpha,-1) # alpha_n shape : (batch_size, num_cxt, num_qn, 1)
         # Obtain C2Q attention outputs
         L_t = tf.transpose(L, perm=[0,2,1])
-        beta_logits_mask = tf.expand_dims(cxt_mask, 1) # shape (batch_size, 1, num_cxt+1)
-        _, beta = masked_softmax(L_t, beta_logits_mask, 2) # beta shape : (batch_size, num_cxt+1, num_qn+1)
-        b = tf.matmul(beta, cxt_hiddens)    # b shape : (batch_size, num_qn+1, cxt_vec_size)
+        beta = tf.nn.softmax(L_t) # beta shape : (batch_size, num_cxt+1, num_qn+1)
+        b = tf.matmul(beta, cxt_hiddens)    # b shape : (batch_size, num_qn, cxt_vec_size)
         b_n = tf.expand_dims(b, 1)
         coattnCxt = tf.reduce_sum(alpha_n * b_n, 2)
-        # alpha_n*b shape : (batch_size, num_cxt+1, num_qn+1, cxt_vec_size) coattnCxt shape : (batch_size, num_cxt+1, cxt_vec_size)
-        blended_reps = tf.concat([coattnCxt, a], axis=2) # shape : (batch_size, num_cxt+1, 2*vec_size)
-        blended_reps_dense = tf.contrib.layers.fully_connected(blended_reps, num_outputs=self.qn_vec_size/2)
-        # blended_reps_dense is shape (batch_size, context_len, hidden_size)
-        blended_reps_final = tf.nn.dropout(x=blended_reps_dense, keep_prob=self.keep_prob/2)
+        # alpha_n*b shape : (batch_size, num_cxt, num_qn, cxt_vec_size) coattnCxt shape : (batch_size, num_cxt, cxt_vec_size)
+        blended_reps = tf.concat([coattnCxt, a], axis=2) # shape : (batch_size, num_cxt, 2*vec_size)
+        rnn_cell_fw = rnn_cell.LSTMCell(self.cxt_vec_size/2)
+        rnn_cell_fw = DropoutWrapper(rnn_cell_fw, input_keep_prob=self.keep_prob)
+        rnn_cell_bw = rnn_cell.LSTMCell(self.cxt_vec_size/2)
+        rnn_cell_bw = DropoutWrapper(rnn_cell_bw, input_keep_prob=self.keep_prob)
+        (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(rnn_cell_fw, rnn_cell_bw, blended_reps, dtype=tf.float32)
+
+        # Concatenate the forward and backward hidden states
+        blended_reps_dense = tf.concat([fw_out, bw_out], 2)
+        # Apply dropout
+        blended_reps_final = tf.nn.dropout(blended_reps_dense, self.keep_prob)
         return blended_reps_final
 
 class CoAttn(object):
