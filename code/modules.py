@@ -109,6 +109,7 @@ class SimpleSoftmaxLayer(object):
             # Linear downprojection layer
             logits = tf.contrib.layers.fully_connected(inputs, num_outputs=1, activation_fn=None) # shape (batch_size, seq_len, 1)
             logits = tf.squeeze(logits, axis=[2]) # shape (batch_size, seq_len)
+#            logits = logits[:, 0:-1] #one extra logit in Sambar's code
 
             # Take softmax over sequence
             masked_logits, prob_dist = masked_softmax(logits, masks, 1)
@@ -179,6 +180,10 @@ class CoAttn_simplified(object):
         self.keep_prob = keep_prob
         self.qn_vec_size = qn_vec_size
         self.cxt_vec_size = cxt_vec_size
+        self.rnn_cell_fw = rnn_cell.LSTMCell(cxt_vec_size/2, reuse=tf.AUTO_REUSE)
+        self.rnn_cell_fw = DropoutWrapper(self.rnn_cell_fw, input_keep_prob=self.keep_prob)
+        self.rnn_cell_bw = rnn_cell.LSTMCell(cxt_vec_size/2, reuse=tf.AUTO_REUSE)
+        self.rnn_cell_bw = DropoutWrapper(self.rnn_cell_bw, input_keep_prob=self.keep_prob)
 
     def build_graph(self, qn_hiddens, cxt_hiddens, qn_mask, cxt_mask):
         """
@@ -218,11 +223,7 @@ class CoAttn_simplified(object):
         coattnCxt = tf.reduce_sum(alpha_n * b_n, 2)
         # alpha_n*b shape : (batch_size, num_cxt, num_qn, cxt_vec_size) coattnCxt shape : (batch_size, num_cxt, cxt_vec_size)
         blended_reps = tf.concat([coattnCxt, a], axis=2) # shape : (batch_size, num_cxt, 2*vec_size)
-        rnn_cell_fw = rnn_cell.LSTMCell(self.cxt_vec_size/2)
-        rnn_cell_fw = DropoutWrapper(rnn_cell_fw, input_keep_prob=self.keep_prob)
-        rnn_cell_bw = rnn_cell.LSTMCell(self.cxt_vec_size/2)
-        rnn_cell_bw = DropoutWrapper(rnn_cell_bw, input_keep_prob=self.keep_prob)
-        (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(rnn_cell_fw, rnn_cell_bw, blended_reps, dtype=tf.float32)
+        (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(self.rnn_cell_fw, self.rnn_cell_bw, blended_reps, dtype=tf.float32)
 
         # Concatenate the forward and backward hidden states
         blended_reps_dense = tf.concat([fw_out, bw_out], 2)
@@ -246,6 +247,10 @@ class CoAttn_zeroSentinel(object):
         self.keep_prob = keep_prob
         self.qn_vec_size = qn_vec_size
         self.cxt_vec_size = cxt_vec_size
+        self.rnn_cell_fw = rnn_cell.LSTMCell(cxt_vec_size/2, reuse=False)
+        self.rnn_cell_fw = DropoutWrapper(self.rnn_cell_fw, input_keep_prob=self.keep_prob)
+        self.rnn_cell_bw = rnn_cell.LSTMCell(cxt_vec_size/2, reuse=False)
+        self.rnn_cell_bw = DropoutWrapper(self.rnn_cell_bw, input_keep_prob=self.keep_prob)
 
     def build_graph(self, qn_hiddens, cxt_hiddens, qn_mask, cxt_mask):
         """
@@ -301,11 +306,7 @@ class CoAttn_zeroSentinel(object):
         coattnCxt = tf.reduce_sum(alpha_n * b_n, 2)
         # alpha_n*b shape : (batch_size, num_cxt, num_qn, cxt_vec_size) coattnCxt shape : (batch_size, num_cxt, cxt_vec_size)
         blended_reps = tf.concat([coattnCxt, a], axis=2) # shape : (batch_size, num_cxt, 2*vec_size)
-        rnn_cell_fw = rnn_cell.LSTMCell(self.cxt_vec_size/2)
-        rnn_cell_fw = DropoutWrapper(rnn_cell_fw, input_keep_prob=self.keep_prob)
-        rnn_cell_bw = rnn_cell.LSTMCell(self.cxt_vec_size/2)
-        rnn_cell_bw = DropoutWrapper(rnn_cell_bw, input_keep_prob=self.keep_prob)
-        (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(rnn_cell_fw, rnn_cell_bw, blended_reps, dtype=tf.float32)
+        (fw_out, bw_out), _ = tf.nn.bidirectional_dynamic_rnn(self.rnn_cell_fw, self.rnn_cell_bw, blended_reps, dtype=tf.float32)
 
         # Concatenate the forward and backward hidden states
         blended_reps_dense = tf.concat([fw_out, bw_out], 2)
