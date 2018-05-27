@@ -70,7 +70,6 @@ class QAModel(object):
         # Define optimizer and updates
         # (updates is what you need to fetch in session.run to do a gradient update)
         self.global_step = tf.Variable(0, name="global_step", trainable=False)
-        #learning rate annealing
         opt = tf.train.AdamOptimizer(learning_rate=FLAGS.learning_rate) # you can try other optimizers
         self.updates = opt.apply_gradients(zip(clipped_gradients, params), global_step=self.global_step)
 
@@ -135,15 +134,7 @@ class QAModel(object):
         context_hiddens = encoder.build_graph(self.context_embs, self.context_mask) # (batch_size, context_len, hidden_size*2)
         question_hiddens = encoder.build_graph(self.qn_embs, self.qn_mask) # (batch_size, question_len, hidden_size*2)
 
-        # Use context hidden states to attend to question hidden states
-        attn_layer_start = BasicAttn(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
-        blended_reps_start = attn_layer_start.build_graph(question_hiddens, self.qn_mask, context_hiddens) # attn_output is shape (batch_size, context_len, hidden_size*2)
-        attn_layer_end = BasicAttn(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
-        blended_reps_end = attn_layer_end.build_graph(question_hiddens, self.qn_mask, context_hiddens) # attn_output is shape (batch_size, context_len, hidden_size*2)
-#        attn_layer_start = CoAttn_zeroSentinel(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
-#        blended_reps_start = attn_layer_start.build_graph(question_hiddens, context_hiddens, self.qn_mask, self.context_mask) # attn_output is shape (batch_size, context_len, hidden_size*2)
-#        attn_layer_end = CoAttn_zeroSentinel(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
-#        blended_reps_end = attn_layer_end.build_graph(question_hiddens, context_hiddens, self.qn_mask, self.context_mask) # attn_output is shape (batch_size, context_len, hidden_size*2)
+        blended_reps_start, blended_reps_end = self.computeBlendedReps(context_hiddens, question_hiddens, False, BasicAttn)
         # Use softmax layer to compute probability distribution for start location
         # Note this produces self.logits_start and self.probdist_start, both of which have shape (batch_size, context_len)
         with vs.variable_scope("StartDist"):
@@ -154,7 +145,24 @@ class QAModel(object):
         # Note this produces self.logits_end and self.probdist_end, both of which have shape (batch_size, context_len)
         with vs.variable_scope("EndDist"):
             softmax_layer_end = SimpleSoftmaxLayer()
-            self.logits_end, self.probdist_end = softmax_layer_end.build_graph(blended_reps_end, self.context_mask)
+            self.logits_end, self.probdist_end = softmax_layer_end.build_graph(blended_reps_start, self.context_mask)
+
+    def computeBlendedReps(self, context_hiddens, question_hiddens, newBaseline=False, AttnModel=BasicAttn):
+        # This routine makes the assumption that new baseline always uses the BasicAttn module while the old baseline can use either model
+        if newBaseline==True:
+            # Use context hidden states to attend to question hidden states
+            attn_layer_start = BasicAttn(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
+            blended_reps_start = attn_layer_start.build_graph(question_hiddens, self.qn_mask, context_hiddens) # attn_output is shape (batch_size, context_len, hidden_size*2)
+            attn_layer_end = BasicAttn(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
+            blended_reps_end = attn_layer_end.build_graph(question_hiddens, self.qn_mask, context_hiddens)
+        else:
+            attn_layer_start = AttnModel(self.keep_prob, self.FLAGS.hidden_size*2, self.FLAGS.hidden_size*2)
+            if AttnModel == BasicAttn:
+                blended_reps_start = attn_layer_start.build_graph(question_hiddens, self.qn_mask, context_hiddens)
+            else:
+                blended_reps_start = attn_layer_start.build_graph(question_hiddens, context_hiddens, self.qn_mask, self.context_mask)
+            blended_reps_end = blended_reps_start
+        return blended_reps_start, blended_reps_end
 
     def add_loss(self):
         """
