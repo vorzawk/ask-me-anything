@@ -3,7 +3,10 @@ A Neural network model which can take a passage of text as input and answer ques
 The model achieves an F1-Score of 67.37% while answering questions.
 
 ### Examples
-Here are some passages and questions based on them which the model had to answer. The model's predicted answer and the correct answer are also shown. It is seen that the model does a good job of ignoring the details that are not relevant to the question and choosing the correct answer.  
+Here are some passages and questions based on them which the model had to answer. The model's predicted answer and the correct answer are also shown. It is seen that the model does a good job of ignoring the details that are not relevant to the question and choosing the correct answer.
+#### Question 1
 ![Q1](Q1.PNG)  
+#### Question 2
 ![Q2](Q2.PNG)  
+#### Question 3
 ![Q3](Q2.PNG)
